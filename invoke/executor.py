@@ -99,14 +99,18 @@ class Executor(object):
             dedupe = self.config.tasks.dedupe
         except AttributeError:
             dedupe = True
-        # Dedupe across entire run now that we know about all calls in order
-        calls = self.dedupe(expanded) if dedupe else expanded
+        deduped = set()
         # Execute
         results = {}
         # TODO: maybe clone initial config here? Probably not necessary,
         # especially given Executor is not designed to execute() >1 time at the
         # moment...
-        for call in calls:
+        for call in expanded:
+            if dedupe:
+                if call in deduped:
+                    debug("{!r}: found in list already, skipping".format(call))
+                    continue
+                deduped.add(call)
             autoprint = call in direct and call.autoprint
             args = call.args
             debug("Executing {!r}".format(call))
@@ -158,29 +162,9 @@ class Executor(object):
             calls = [Call(task=self.collection[self.collection.default])]
         return calls
 
-    def dedupe(self, calls):
-        """
-        Deduplicate a list of `tasks <.Call>`.
-
-        :param calls: An iterable of `.Call` objects representing tasks.
-
-        :returns: A list of `.Call` objects.
-
-        .. versionadded:: 1.0
-        """
-        deduped = []
-        debug("Deduplicating tasks...")
-        for call in calls:
-            if call not in deduped:
-                debug("{!r}: no duplicates found, ok".format(call))
-                deduped.append(call)
-            else:
-                debug("{!r}: found in list already, skipping".format(call))
-        return deduped
-
     def expand_calls(self, calls):
         """
-        Expand a list of `.Call` objects into a near-final list of same.
+        Expand a list of `.Call` objects into a near-final generator of same.
 
         The default implementation of this method simply adds a task's
         pre/post-task list before/after the task itself, as necessary.
@@ -191,7 +175,6 @@ class Executor(object):
 
         .. versionadded:: 1.0
         """
-        ret = []
         for call in calls:
             # Normalize to Call (this method is sometimes called with pre/post
             # task lists, which may contain 'raw' Task objects)
@@ -206,7 +189,8 @@ class Executor(object):
             # TODO: we _probably_ don't even want the config in here anymore,
             # we want this to _just_ be about the recursion across pre/post
             # tasks or parameterization...?
-            ret.extend(self.expand_calls(call.pre))
-            ret.append(call)
-            ret.extend(self.expand_calls(call.post))
-        return ret
+            for precall in self.expand_calls(call.pre):
+                yield precall
+            yield call
+            for postcall in self.expand_calls(call.post):
+                yield postcall
